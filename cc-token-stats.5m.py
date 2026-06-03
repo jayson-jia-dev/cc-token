@@ -10,7 +10,7 @@ cc-token-status — Claude Code usage dashboard in your menu bar.
 https://github.com/jayson-jia-dev/cc-token-status
 """
 
-VERSION = "1.5.19"
+VERSION = "1.5.20"
 REPO_URL = "https://raw.githubusercontent.com/jayson-jia-dev/cc-token-status/main"
 
 import json, os, glob, shlex, socket, subprocess, sys
@@ -191,12 +191,32 @@ PRICING = {
     "sonnet":    {"input": 3,  "output": 15, "cache_write_5m": 3.75,  "cache_write_1h": 6,     "cache_read": 0.30},
     "haiku":     {"input": 1,  "output": 5,  "cache_write_5m": 1.25,  "cache_write_1h": 2,     "cache_read": 0.10},
 }
+# Explicit display-name overrides. Most well-formed ids auto-derive via
+# model_short(); only add here when the auto-derived name needs tweaking.
 MODEL_SHORT = {
-    "claude-opus-4-7":"Opus 4.7",
-    "claude-opus-4-6":"Opus 4.6","claude-opus-4-5-20250918":"Opus 4.5",
-    "claude-sonnet-4-6":"Sonnet 4.6","claude-sonnet-4-5-20250929":"Sonnet 4.5",
+    "claude-opus-4-5-20250918":"Opus 4.5",
+    "claude-sonnet-4-5-20250929":"Sonnet 4.5",
     "claude-haiku-4-5-20251001":"Haiku 4.5",
 }
+
+_FAMILIES = {"opus": "Opus", "sonnet": "Sonnet", "haiku": "Haiku"}
+
+def model_short(m):
+    """Friendly display name for a model id, e.g. 'claude-opus-4-8' -> 'Opus 4.8'.
+    Auto-derives Family + major.minor so future models need no code change;
+    MODEL_SHORT only holds explicit overrides. Handles variant suffixes like
+    'claude-opus-4-8[1m]' and trailing date stamps."""
+    if not m:
+        return m
+    base = m.split("[")[0]  # drop variant suffix e.g. [1m]
+    if base in MODEL_SHORT: return MODEL_SHORT[base]
+    if m in MODEL_SHORT:    return MODEL_SHORT[m]
+    parts = base.split("-")
+    for i, p in enumerate(parts):
+        if p in _FAMILIES and i + 2 < len(parts) \
+                and parts[i + 1].isdigit() and parts[i + 2].isdigit():
+            return f"{_FAMILIES[p]} {parts[i + 1]}.{parts[i + 2]}"
+    return base.split("-")[-1] if "-" in base else base[:15]
 
 def dw(s):
     return sum(2 if ord(c)>0x2E7F else 1 for c in s)
@@ -1471,7 +1491,7 @@ def scan():
                                 if not s["d_max"] or msg_date > s["d_max"]: s["d_max"] = msg_date
                                 # v3: per-day per-model
                                 if m and m != "<synthetic>":
-                                    short_m = MODEL_SHORT.get(m, m.split("-")[-1] if "-" in m else m[:15])
+                                    short_m = model_short(m)
                                     dm = s["daily_models"][msg_date][short_m]
                                     dm["cost"] += mc; dm["msgs"] += 1
 
@@ -1512,7 +1532,7 @@ def scan():
                         sess_list = s["sessions_by_day"][sess_first_date]
                         if len(sess_list) < 30:  # cap per day — prevents dashboard 'sessions today' table from blowing up on heavy usage days; surplus sessions still count in tokens/cost totals
                             dom_model = max(sess_model_counts, key=sess_model_counts.get) if sess_model_counts else ""
-                            short_dm = MODEL_SHORT.get(dom_model, dom_model.split("-")[-1] if "-" in dom_model else dom_model[:15])
+                            short_dm = model_short(dom_model)
                             sess_list.append({"project": proj_name, "cost": round(sess_cost, 2),
                                               "msgs": sess_msgs, "model": short_dm})
             except OSError as e:
@@ -1771,7 +1791,7 @@ def generate_dashboard():
     model_display = {}
     model_msgs = {}
     for k, v in models.items():
-        short = MODEL_SHORT.get(k, k.split("-")[-1] if "-" in k else k[:15])
+        short = model_short(k)
         model_display[short] = round(v["cost"], 2)
         model_msgs[short] = v["msgs"]
 
@@ -3026,7 +3046,7 @@ def main():
             print("-----")
             tm_total = max(sum(v["msgs"] for v in today["models"].values()), 1)
             for model, data in sorted(today["models"].items(), key=lambda x: -x[1]["cost"]):
-                short = MODEL_SHORT.get(model, model)
+                short = model_short(model)
                 pct = data["msgs"] / tm_total * 100
                 print(f"--{short}: {data['msgs']:,} ({pct:.0f}%) {fc(data['cost'])} | {MODL}")
 
@@ -3110,7 +3130,7 @@ def main():
             print("-----")
             mtotal = max(sum(v["msgs"] for v in mb.values()), 1)
             for model, data in sorted(mb.items(), key=lambda x: -x[1]["cost"]):
-                short = MODEL_SHORT.get(model, model)
+                short = model_short(model)
                 pct = data["msgs"] / mtotal * 100
                 print(f"--{short}: {pct:.0f}% · {fc(data['cost'])} | {MODL}")
         dr = f"{m['d_min'][5:]} ~ {m['d_max'][5:]}" if m["d_min"] and m["d_max"] else "N/A"
@@ -3156,7 +3176,7 @@ def main():
     # Models
     print(f"{t('models')} | {SH}")
     for model, data in sorted(all_models.items(), key=lambda x: -x[1]["cost"]):
-        short = MODEL_SHORT.get(model, model)
+        short = model_short(model)
         pct = data["msgs"] / total_model_msgs * 100
         print(f"--{short:<12} {pct:>3.0f}%   {fc(data['cost']):>8}   {data['msgs']:>6,} msgs | {ROW2}")
 
