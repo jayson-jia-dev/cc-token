@@ -10,7 +10,7 @@ cc-token — Claude Code usage dashboard in your menu bar.
 https://github.com/jayson-jia-dev/cc-token
 """
 
-VERSION = "1.6.3"
+VERSION = "1.6.4"
 REPO_URL = "https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main"
 
 import json, os, glob, shlex, socket, subprocess, sys
@@ -1357,7 +1357,7 @@ def _file_fingerprints(base):
             except OSError: pass
     return fps
 
-SCAN_CACHE_SCHEMA = "msgid-dedup-v1"  # bump when scan-result semantics change
+SCAN_CACHE_SCHEMA = "msgid-dedup-v3-perday-sess"  # bump when scan-result semantics change (v2: per-day sessions kept by top cost, not scan order)
 
 def _load_scan_cache(base, today_str):
     """Return cached scan result if all files unchanged and same day.
@@ -1477,7 +1477,10 @@ def scan():
         # appear in BOTH root and subagents/ count exactly once.
         for jf in sorted(glob.glob(os.path.join(pd, "**", "*.jsonl"), recursive=True)):
             has = False
-            sess_cost = 0.0; sess_msgs = 0; sess_first_date = None; sess_model_counts = {}
+            # Per-day session buckets: each message is attributed to its OWN
+            # day so the per-day session rows sum exactly to that day's total
+            # (a single session file spanning midnight/days splits correctly).
+            sess_days = {}  # msg_date -> {"cost", "msgs", "models"}
             try:
                 with open(jf, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
@@ -1515,10 +1518,8 @@ def scan():
                                 cw_cost = w * p["cache_write_1h"]
                             mc = (i * p["input"] + o * p["output"] + cw_cost + r * p["cache_read"]) / 1e6
                             s["cost"] += mc
-                            # v3: session-level tracking
-                            sess_cost += mc; sess_msgs += 1
-                            if m and m != "<synthetic>":
-                                sess_model_counts[m] = sess_model_counts.get(m, 0) + 1
+                            # (session-level cost is bucketed per-day below, in
+                            # the `if msg_date:` block, so it reconciles to daily)
 
                             # Model breakdown
                             if m and m != "<synthetic>":
@@ -1553,10 +1554,6 @@ def scan():
                                     if m not in td["models"]: td["models"][m] = {"msgs": 0, "cost": 0.0}
                                     td["models"][m]["msgs"] += 1; td["models"][m]["cost"] += mc
 
-                            # v3: track first message date for session
-                            if msg_date and not sess_first_date:
-                                sess_first_date = msg_date
-
                             # Daily (all dates) + date range from message timestamps
                             if msg_date:
                                 dd = s["daily"][msg_date]
@@ -1568,6 +1565,14 @@ def scan():
                                     short_m = model_short(m)
                                     dm = s["daily_models"][msg_date][short_m]
                                     dm["cost"] += mc; dm["msgs"] += 1
+                                # Per-day session bucket — attribute THIS message
+                                # to its own day so per-day session rows sum to
+                                # the day total (cross-midnight/multi-day safe).
+                                _b = sess_days.get(msg_date)
+                                if _b is None: _b = sess_days[msg_date] = {"cost": 0.0, "msgs": 0, "models": {}}
+                                _b["cost"] += mc; _b["msgs"] += 1
+                                if m and m != "<synthetic>":
+                                    _b["models"][m] = _b["models"].get(m, 0) + 1
 
                             # Hourly (already local from the single parse above)
                             if local_dt is not None:
@@ -1600,21 +1605,32 @@ def scan():
                             _log_diag(f"scan:line:{os.path.basename(jf)}", e)
                 if has:
                     s["sessions"] += 1
-                    # v3: record session detail + count sessions per day
-                    if sess_first_date:
-                        s["daily"][sess_first_date]["sessions"] = s["daily"][sess_first_date].get("sessions", 0) + 1
-                        sess_list = s["sessions_by_day"][sess_first_date]
-                        if len(sess_list) < 30:  # cap per day — prevents dashboard 'sessions today' table from blowing up on heavy usage days; surplus sessions still count in tokens/cost totals
-                            dom_model = max(sess_model_counts, key=sess_model_counts.get) if sess_model_counts else ""
-                            short_dm = model_short(dom_model)
-                            sess_list.append({"project": proj_name, "cost": round(sess_cost, 2),
-                                              "msgs": sess_msgs, "model": short_dm})
+                    # v3: record per-day session detail. Each (session, day)
+                    # bucket is filed under THAT day with only that day's cost/
+                    # msgs, so sum(sessions_by_day[D]) == daily[D] exactly — even
+                    # for a session file that spans midnight or several days.
+                    # The per-day list is trimmed to the 30 most-expensive at the
+                    # end of scan(); dropped sessions still count in daily totals
+                    # and the per-day `sessions` count, so the dashboard renders
+                    # a "+N more sessions ($X)" reconciliation row.
+                    for _sd, _b in sess_days.items():
+                        s["daily"][_sd]["sessions"] = s["daily"][_sd].get("sessions", 0) + 1
+                        _dm = max(_b["models"], key=_b["models"].get) if _b["models"] else ""
+                        s["sessions_by_day"][_sd].append({"project": proj_name, "cost": round(_b["cost"], 2),
+                                          "msgs": _b["msgs"], "model": model_short(_dm)})
             except (OSError, UnicodeError) as e:
                 # UnicodeError belt-and-suspenders: open() already uses
                 # errors="replace" so decode never raises during iteration,
                 # but a bad path/encoding edge still skips just this file
                 # instead of aborting the whole scan → blank dashboard.
                 _log_diag(f"scan:open:{os.path.basename(jf)}", e)
+
+    # Trim each day's session list to the 30 most expensive (the dashboard
+    # only renders a bounded table). The dropped sessions still count in the
+    # daily cost/msgs/tokens totals and the per-day `sessions` count, so the
+    # dashboard can render a "+N more sessions ($X)" reconciliation row.
+    for _d in s["sessions_by_day"]:
+        s["sessions_by_day"][_d] = sorted(s["sessions_by_day"][_d], key=lambda x: -x.get("cost", 0))[:30]
 
     _save_scan_cache(base, today_str, s)
     return s
@@ -2346,10 +2362,20 @@ etd.style.cssText='padding:8px 8px 8px 24px;color:#484f58;font-style:italic;bord
 }else{
 [{v:'\u25b6 '+d.slice(5),a:'left'},{v:fc(row.cost||0),a:'right'},{v:(row.msgs||0).toLocaleString(),a:'right'},{v:fk(row.tokens||0),a:'right'}].forEach(function(c){
 var td=tr.insertCell();td.textContent=c.v;td.style.cssText='padding:5px 8px;border-bottom:1px solid #21262d;color:#c9d1d9;text-align:'+c.a;});
-if(hasSess){sessions[d].forEach(function(s){
+if(hasSess){var shownC=0,shownM=0;sessions[d].forEach(function(s){
+shownC+=(s.cost||0);shownM+=(s.msgs||0);
 var sr=tbody.insertRow();sr.style.display='none';sr.setAttribute('data-parent',d);
 [{v:'  '+(s.project||'\u2014'),a:'left'},{v:fc(s.cost||0),a:'right'},{v:s.msgs||0,a:'right'},{v:s.model||'\u2014',a:'right'}].forEach(function(c){
-var td=sr.insertCell();td.textContent=c.v;td.style.cssText='padding:3px 8px;border-bottom:1px solid #1a1f26;color:#8b949e;text-align:'+c.a+';font-size:11px';});});}
+var td=sr.insertCell();td.textContent=c.v;td.style.cssText='padding:3px 8px;border-bottom:1px solid #1a1f26;color:#8b949e;text-align:'+c.a+';font-size:11px';});});
+// Reconciliation row: sessions are capped at top-30-by-cost, so on busy days
+// the listed rows don't sum to the day header. Surface the remainder so the
+// detail always reconciles to the day total instead of looking broken.
+var remN=(row.sessions||0)-sessions[d].length,remC=(row.cost||0)-shownC,remM=(row.msgs||0)-shownM;
+if(remN>0||remM>0||remC>0.005){
+var rr=tbody.insertRow();rr.style.display='none';rr.setAttribute('data-parent',d);
+var rlabel=zh?('  \u5176\u4f59'+(remN>0?(' '+remN+' \u4e2a'):'')+'\u4f1a\u8bdd'):('  +'+(remN>0?remN:'')+' more sessions');
+[{v:rlabel,a:'left'},{v:fc(remC>0?remC:0),a:'right'},{v:(remM>0?remM:0).toLocaleString(),a:'right'},{v:'\u2014',a:'right'}].forEach(function(c){
+var td=rr.insertCell();td.textContent=c.v;td.style.cssText='padding:3px 8px;border-bottom:1px solid #1a1f26;color:#6e7681;font-style:italic;text-align:'+c.a+';font-size:11px';});}}
 else{var nr=tbody.insertRow();nr.style.display='none';nr.setAttribute('data-parent',d);
 var ntd=nr.insertCell();ntd.colSpan=4;ntd.textContent=zh?'无 Session 明细（来自远程同步）':'No session details (from remote sync)';
 ntd.style.cssText='padding:6px 8px 6px 24px;color:#484f58;font-style:italic;border-bottom:1px solid #1a1f26;font-size:11px';}}});
