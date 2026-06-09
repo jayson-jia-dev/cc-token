@@ -24,7 +24,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PLUGIN = ROOT / "cc-token-stats.5m.py"
+PLUGIN = ROOT / "cc-token.5m.py"
 
 
 def load_plugin():

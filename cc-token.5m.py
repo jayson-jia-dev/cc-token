@@ -6,12 +6,12 @@
 # <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
 
 """
-cc-token-status — Claude Code usage dashboard in your menu bar.
-https://github.com/jayson-jia-dev/cc-token-status
+cc-token — Claude Code usage dashboard in your menu bar.
+https://github.com/jayson-jia-dev/cc-token
 """
 
-VERSION = "1.5.20"
-REPO_URL = "https://raw.githubusercontent.com/jayson-jia-dev/cc-token-status/main"
+VERSION = "1.6.0"
+REPO_URL = "https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main"
 
 import json, os, glob, shlex, socket, subprocess, sys
 from collections import defaultdict
@@ -20,8 +20,28 @@ from pathlib import Path
 
 # ─── Config ──────────────────────────────────────────────────────
 
-CONFIG_FILE = Path.home() / ".config" / "cc-token-stats" / "config.json"
-ICLOUD_SYNC_DIR = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "cc-token-stats"
+CONFIG_FILE = Path.home() / ".config" / "cc-token" / "config.json"
+ICLOUD_SYNC_DIR = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "cc-token"
+
+# ─── Legacy rename migration (cc-token-stats/cc-token-status → cc-token) ──
+# v1.6.0 renamed the project to a single canonical name. Pre-1.6.0 installs
+# kept their config + iCloud data under the old "cc-token-stats" dir. Move it
+# once, on first run of the new build, so upgrades are zero-touch. Only moves
+# when the legacy dir exists AND the new dir doesn't (never clobbers fresh
+# config). Best-effort: any failure leaves the old dir untouched.
+def _migrate_legacy_dirs():
+    pairs = [
+        (Path.home() / ".config" / "cc-token-stats", CONFIG_FILE.parent),
+        (Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "cc-token-stats", ICLOUD_SYNC_DIR),
+    ]
+    for old, new in pairs:
+        try:
+            if old.is_dir() and not new.exists():
+                new.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(str(old), str(new))
+        except OSError:
+            pass
+_migrate_legacy_dirs()
 
 DEFAULTS = {
     "claude_dir": str(Path.home() / ".claude"),
@@ -37,8 +57,8 @@ DEFAULTS = {
     # ("Safari" / "Google Chrome" / "Firefox") to force one browser.
     "browser": "auto",
 }
-NOTIFY_STATE_FILE = Path.home() / ".config" / "cc-token-stats" / ".notify_state.json"
-SCAN_CACHE_FILE = Path.home() / ".config" / "cc-token-stats" / ".scan_cache.json"
+NOTIFY_STATE_FILE = Path.home() / ".config" / "cc-token" / ".notify_state.json"
+SCAN_CACHE_FILE = Path.home() / ".config" / "cc-token" / ".scan_cache.json"
 
 def load_config():
     cfg = dict(DEFAULTS)
@@ -258,7 +278,7 @@ LEVELS = [
     (86, "👑", "Orchestrator", "大乘期"),
 ]
 
-LEVEL_CACHE_FILE = Path.home() / ".config" / "cc-token-stats" / ".level_cache.json"
+LEVEL_CACHE_FILE = Path.home() / ".config" / "cc-token" / ".level_cache.json"
 
 def calc_user_level():
     """Calculate user level from local data. Returns (score, level_idx,
@@ -632,7 +652,7 @@ def _notify(title, msg):
         m_lit = json.dumps(msg, ensure_ascii=False)
         subprocess.run([
             "osascript", "-e",
-            f'display notification {m_lit} with title {t_lit} subtitle "cc-token-status"'
+            f'display notification {m_lit} with title {t_lit} subtitle "cc-token"'
         ], timeout=5)
     except (subprocess.SubprocessError, OSError): pass
 
@@ -761,10 +781,10 @@ def check_and_notify(usage):
 
 # ─── Auto-update (once per day, silent) ──────────────────────────
 
-UPDATE_CHECK_FILE    = Path.home() / ".config" / "cc-token-stats" / ".last_update_check"
-UPDATE_LOG_FILE      = Path.home() / ".config" / "cc-token-stats" / ".update.log"
-UPDATE_NOTIFIED_FILE = Path.home() / ".config" / "cc-token-stats" / ".update.notified"
-DIAG_LOG_FILE        = Path.home() / ".config" / "cc-token-stats" / ".diag.log"
+UPDATE_CHECK_FILE    = Path.home() / ".config" / "cc-token" / ".last_update_check"
+UPDATE_LOG_FILE      = Path.home() / ".config" / "cc-token" / ".update.log"
+UPDATE_NOTIFIED_FILE = Path.home() / ".config" / "cc-token" / ".update.notified"
+DIAG_LOG_FILE        = Path.home() / ".config" / "cc-token" / ".diag.log"
 
 def _log_update(msg):
     """Append a timestamped line to the update log; rotate if > 50 KB."""
@@ -807,7 +827,7 @@ def _maybe_warn_update_stuck():
     we don't spam every 5 min). Returns empty string when healthy.
 
     Three consecutive failures at the 24h cadence = plugin stuck for 3 days.
-    Users never look at ~/.config/cc-token-stats/.update.log so without this
+    Users never look at ~/.config/cc-token/.update.log so without this
     surface, a broken updater is invisible until a feature goes missing
     (as happened 2026-04-24 — a colleague was 4+ days stale and only noticed
     because two menu items were absent)."""
@@ -824,7 +844,7 @@ def _maybe_warn_update_stuck():
         last = 0
     if streak > last:
         _notify(
-            "cc-token-stats auto-update stuck",
+            "cc-token auto-update stuck",
             f"{streak} consecutive failed update checks. Run in Terminal: "
             f"curl -fsSL {REPO_URL}/install.sh | bash"
         )
@@ -885,7 +905,7 @@ def _http_get(url, timeout=15):
 
 def auto_update():
     """Check for updates once per day. Downloads new version silently.
-    Every failure logs to ~/.config/cc-token-stats/.update.log so users can
+    Every failure logs to ~/.config/cc-token/.update.log so users can
     diagnose why their plugin isn't updating (previous versions silently
     swallowed all errors)."""
     if not CFG.get("auto_update", True):
@@ -903,7 +923,7 @@ def auto_update():
         # 1) Download the full remote file + parse VERSION via strict regex.
         #    Strict: matches only `VERSION = "x.y.z..."` at line start — won't
         #    be fooled by a future `VERSION_HISTORY = ...` or similar variable.
-        head_bytes = _http_get(f"{REPO_URL}/cc-token-stats.5m.py", timeout=15)
+        head_bytes = _http_get(f"{REPO_URL}/cc-token.5m.py", timeout=15)
         if len(head_bytes) < 1000:
             _log_update(f"check failed: remote file suspiciously small ({len(head_bytes)} bytes)")
             return
@@ -942,24 +962,24 @@ def auto_update():
                 capture_output=True, text=True, timeout=3
             ).stdout.strip()
             if out:
-                plugin_path = os.path.join(out, "cc-token-stats.5m.py")
+                plugin_path = os.path.join(out, "cc-token.5m.py")
         except (subprocess.SubprocessError, OSError):
             pass
         if not plugin_path:
             plugin_path = os.path.join(
                 str(Path.home()), "Library", "Application Support",
-                "SwiftBar", "plugins", "cc-token-stats.5m.py")
+                "SwiftBar", "plugins", "cc-token.5m.py")
 
         # 3) Write + fsync + re-read to verify the bytes landed intact on disk.
         #    tmp name is hidden + lacks the SwiftBar refresh pattern ('.5m.'),
         #    so SwiftBar won't load it as a plugin, and cleanup_duplicate_plugins()
-        #    (which matches 'cc-token-stats.5m.py.*') won't race-delete it. PID
+        #    (which matches 'cc-token.5m.py.*') won't race-delete it. PID
         #    suffix keeps concurrent auto_update/force-update runs from stomping
         #    each other's tmp.
         data = head_bytes
         tmp_path = os.path.join(
             os.path.dirname(plugin_path),
-            f".cc-token-stats.download.{os.getpid()}"
+            f".cc-token.download.{os.getpid()}"
         )
         try:
             with open(tmp_path, "wb") as f:
@@ -1122,8 +1142,8 @@ def fetch_usage():
     except (urllib.error.URLError, OSError, socket.timeout, json.JSONDecodeError):
         return None, "api_error"
 
-USAGE_CACHE = Path.home() / ".config" / "cc-token-stats" / ".usage_cache.json"
-BACKOFF_STATE_FILE = Path.home() / ".config" / "cc-token-stats" / ".backoff_state.json"
+USAGE_CACHE = Path.home() / ".config" / "cc-token" / ".usage_cache.json"
+BACKOFF_STATE_FILE = Path.home() / ".config" / "cc-token" / ".backoff_state.json"
 
 def _load_backoff():
     try:
@@ -1660,7 +1680,7 @@ def load_remotes():
                 _log_diag(f"load_remotes:{m}", e)
     return remotes
 
-DASHBOARD_FILE = Path.home() / ".config" / "cc-token-stats" / "dashboard.html"
+DASHBOARD_FILE = Path.home() / ".config" / "cc-token" / "dashboard.html"
 
 def _build_level_data():
     """Build level data dict for dashboard payload."""
@@ -2622,7 +2642,7 @@ else:
     BAR  = "color=#1A5C4C size=12 font=Menlo"     # rich dark teal — bar charts
     WARN = "color=#B86E1A size=12"                 # dark amber — warnings
 
-HELPER_FILE = Path.home() / ".config" / "cc-token-stats" / ".toggle.sh"
+HELPER_FILE = Path.home() / ".config" / "cc-token" / ".toggle.sh"
 
 def _resolve_plugin_path():
     """Locate the installed SwiftBar plugin file. SwiftBar config first, then default."""
@@ -2632,16 +2652,16 @@ def _resolve_plugin_path():
             capture_output=True, text=True, timeout=3
         ).stdout.strip()
         if out:
-            return os.path.join(out, "cc-token-stats.5m.py")
+            return os.path.join(out, "cc-token.5m.py")
     except (subprocess.SubprocessError, OSError):
         pass
     return os.path.join(
         str(Path.home()), "Library", "Application Support",
-        "SwiftBar", "plugins", "cc-token-stats.5m.py"
+        "SwiftBar", "plugins", "cc-token.5m.py"
     )
 
 def install_toggle_script():
-    """Write ~/.config/cc-token-stats/.toggle.sh.
+    """Write ~/.config/cc-token/.toggle.sh.
     Called EARLY in main() and from the main-crash fallback — so the menu's
     bash-buttons ('View Full Report', 'Check for Updates Now', etc.) keep
     working even if main() blows up partway through building the menu.
@@ -2661,7 +2681,7 @@ def install_toggle_script():
         esc_plugin_bash   = shlex.quote(plugin_path)
         esc_config_py     = repr(str(CONFIG_FILE))
         HELPER_FILE.write_text(f"""#!/bin/bash
-# Auto-generated by cc-token-stats.5m.py — do not edit (regenerated each run).
+# Auto-generated by cc-token.5m.py — do not edit (regenerated each run).
 PLUGIN={esc_plugin_bash}
 
 case "$1" in
@@ -2719,16 +2739,16 @@ esac
 def cleanup_duplicate_plugins():
     """Remove stray copies of this plugin in SwiftBar's plugin dir.
     SwiftBar treats any executable whose name contains a refresh-interval
-    pattern (e.g. .5m.) as a plugin — so 'cc-token-stats.5m.py.bak.*' gets
+    pattern (e.g. .5m.) as a plugin — so 'cc-token.5m.py.bak.*' gets
     loaded as a second instance, producing a duplicate menu-bar icon.
-    Self-heal by deleting anything matching cc-token-stats.5m.py.* that
+    Self-heal by deleting anything matching cc-token.5m.py.* that
     isn't this running script."""
     try:
         self_path = os.path.realpath(__file__)
         plugin_dir = os.path.dirname(self_path)
         if os.path.basename(plugin_dir) != "plugins":
             return  # Only clean when we're actually running from SwiftBar's dir
-        prefix = "cc-token-stats.5m.py"
+        prefix = "cc-token.5m.py"
         for name in os.listdir(plugin_dir):
             if name == prefix:
                 continue
@@ -3376,7 +3396,7 @@ if __name__ == "__main__":
                     subprocess.run([
                         "osascript", "-e",
                         f'display notification {body} '
-                        f'with title "cc-token-status" subtitle "Update check"'
+                        f'with title "cc-token" subtitle "Update check"'
                     ], timeout=5)
         except (OSError, subprocess.SubprocessError): pass
         sys.exit(0)

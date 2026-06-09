@@ -1,8 +1,8 @@
 <p align="center">
-  <img src=".github/demo.gif" width="400" alt="cc-token-status demo" />
+  <img src=".github/demo.gif" width="400" alt="cc-token demo" />
 </p>
 
-<h1 align="center">cc-token-status</h1>
+<h1 align="center">cc-token</h1>
 
 <p align="center">
   Claude Code usage dashboard in your macOS menu bar.<br/>
@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/jayson-jia-dev/cc-token-status/releases"><img src="https://img.shields.io/github/v/tag/jayson-jia-dev/cc-token-status?label=version&sort=semver" alt="Version" /></a>
-  <a href="https://github.com/jayson-jia-dev/cc-token-status"><img src="https://img.shields.io/github/stars/jayson-jia-dev/cc-token-status?style=social" alt="Stars" /></a>
-  <a href="https://github.com/jayson-jia-dev/cc-token-status/blob/main/LICENSE"><img src="https://img.shields.io/github/license/jayson-jia-dev/cc-token-status" alt="License" /></a>
+  <a href="https://github.com/jayson-jia-dev/cc-token/releases"><img src="https://img.shields.io/github/v/tag/jayson-jia-dev/cc-token?label=version&sort=semver" alt="Version" /></a>
+  <a href="https://github.com/jayson-jia-dev/cc-token"><img src="https://img.shields.io/github/stars/jayson-jia-dev/cc-token?style=social" alt="Stars" /></a>
+  <a href="https://github.com/jayson-jia-dev/cc-token/blob/main/LICENSE"><img src="https://img.shields.io/github/license/jayson-jia-dev/cc-token" alt="License" /></a>
   <img src="https://img.shields.io/badge/python-3.8+-blue" alt="Python 3.8+" />
   <img src="https://img.shields.io/badge/platform-macOS-lightgrey" alt="macOS" />
 </p>
@@ -36,14 +36,14 @@
 ## Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jayson-jia-dev/cc-token-status/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main/install.sh | bash
 ```
 
 No dependencies to install manually. SwiftBar is auto-installed if missing.
 
-## Why cc-token-status?
+## Why cc-token?
 
-| | cc-token-status | CLI tools | Web dashboards |
+| | cc-token | CLI tools | Web dashboards |
 |---|---|---|---|
 | **See limits at a glance** | Menu bar, one click | Run a command | Open browser |
 | **Official plan limits** | 5h/7d from Anthropic API | Most don't have | Some have |
@@ -105,7 +105,7 @@ Scored across 5 dimensions (100 points total):
 ┌──────────────────────────────────────────────────────────────────┐
 │  SwiftBar (5-min refresh)                                        │
 │   ↓                                                              │
-│  cc-token-stats.5m.py                                            │
+│  cc-token.5m.py                                            │
 │   ├─ ensure_cleanup_disabled() → patch cleanupPeriodDays → 99999 │
 │   ├─ scan()        → parse ~/.claude/projects/**/*.jsonl         │
 │   │                  (recurses into subagents/ — most parsers    │
@@ -125,7 +125,7 @@ Scored across 5 dimensions (100 points total):
 - **Token & cost** — recurses `~/.claude/projects/**/*.jsonl` so Task-tool subagent sessions (under `subagents/`) are counted, not silently dropped like in most parsers. Globally deduplicates by Anthropic `msg.id` so session resume/continue rewrites are counted once. Splits cache-write pricing by TTL (`ephemeral_5m` × 1.25 vs `ephemeral_1h` × 2 of input rate). Incremental mtime fingerprint cache only re-parses changed files
 - **Plan limits** — reads OAuth token from macOS Keychain, queries `api.anthropic.com/api/oauth/usage` with smart caching (9-min fresh + 2-hour stale fallback, HTTP 429 graceful degradation)
 - **Rate-limit alerts** — one notification per escalation per limit-type; `state = {limit_key: {tier, at}}` survives 5h/7d window rollovers so the same threshold doesn't re-fire. Burn-rate prediction suppressed once already blocked
-- **Auto-update** — daily GitHub check with SHA256 verification, atomic tmp+rename, system proxy fallback, downgrade-protected; failures logged to `~/.config/cc-token-stats/.update.log` for diagnosis
+- **Auto-update** — daily GitHub check with SHA256 verification, atomic tmp+rename, system proxy fallback, downgrade-protected; failures logged to `~/.config/cc-token/.update.log` for diagnosis
 - **Multi-machine sync** — writes full stats (including `daily_models`, `daily_hourly`, `sessions_by_day`) to iCloud Drive; reads peers' written values as-is (no re-pricing approximation) so header and Daily合计 stay exactly consistent
 - **Dashboard** — generates self-contained HTML with embedded ECharts, opens in browser (12 panels, all data from local caches)
 - **Refresh** — SwiftBar executes the plugin every 5 minutes
@@ -142,7 +142,7 @@ Scored across 5 dimensions (100 points total):
 
 ## Configuration
 
-Edit `~/.config/cc-token-stats/config.json` or use the in-app Settings menu:
+Edit `~/.config/cc-token/config.json` or use the in-app Settings menu:
 
 | Key | Description | Default |
 |-----|-------------|---------|
@@ -162,7 +162,7 @@ Three paths, same SHA256 verification and atomic replace:
 2. **Menu button** — Settings → "Check for Updates Now" (bypasses the 24h throttle, shows result as a notification)
 3. **Reinstall script**:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/jayson-jia-dev/cc-token-status/main/install.sh | bash -s -- --update
+   curl -fsSL https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main/install.sh | bash -s -- --update
    ```
 
 ### Stuck on an old version?
@@ -170,10 +170,10 @@ Three paths, same SHA256 verification and atomic replace:
 The dropdown title shows your current version (e.g. `v1.5.18`). If auto-update has silently failed for 3+ days, a `⚠️` appears in the title and you'll get a one-shot macOS notification. To force-repair from any state:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jayson-jia-dev/cc-token-status/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main/install.sh | bash
 ```
 
-Update diagnostics live at `~/.config/cc-token-stats/.update.log` (rotated at 50 KB).
+Update diagnostics live at `~/.config/cc-token/.update.log` (rotated at 50 KB).
 
 ## Versioning
 
@@ -183,12 +183,12 @@ Standard 3-segment [SemVer](https://semver.org):
 - **MINOR** — new user-facing feature (menu item, setting, dashboard panel)
 - **PATCH** — bug fix or internal hardening
 
-See [Releases](https://github.com/jayson-jia-dev/cc-token-status/releases) for per-version notes.
+See [Releases](https://github.com/jayson-jia-dev/cc-token/releases) for per-version notes.
 
 ## Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jayson-jia-dev/cc-token-status/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main/uninstall.sh | bash
 ```
 
 ## Requirements

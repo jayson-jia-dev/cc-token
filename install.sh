@@ -1,12 +1,12 @@
 #!/bin/bash
-# cc-token-status installer & updater
-# Install: curl -fsSL https://raw.githubusercontent.com/jayson-jia-dev/cc-token-status/main/install.sh | bash
-# Update:  curl -fsSL https://raw.githubusercontent.com/jayson-jia-dev/cc-token-status/main/install.sh | bash -s -- --update
+# cc-token installer & updater
+# Install: curl -fsSL https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main/install.sh | bash
+# Update:  curl -fsSL https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main/install.sh | bash -s -- --update
 set -euo pipefail
 
-REPO="https://raw.githubusercontent.com/jayson-jia-dev/cc-token-status/main"
-PLUGIN_NAME="cc-token-stats.5m.py"
-VERSION="1.5.20"
+REPO="https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main"
+PLUGIN_NAME="cc-token.5m.py"
+VERSION="1.6.0"
 UPDATE_MODE=false
 
 # Parse args
@@ -17,9 +17,9 @@ for arg in "$@"; do
 done
 
 if $UPDATE_MODE; then
-    echo "cc-token-status updater v${VERSION}"
+    echo "cc-token updater v${VERSION}"
 else
-    echo "cc-token-status installer v${VERSION}"
+    echo "cc-token installer v${VERSION}"
 fi
 echo ""
 
@@ -79,8 +79,8 @@ done
 # SHA256 verification matches auto_update()'s integrity check so first
 # install and subsequent updates trust the same source of truth.
 echo "Downloading latest plugin..."
-TMP_PLUGIN="$PLUGIN_DIR/.cc-token-stats.download.$$"
-TMP_SUM="$PLUGIN_DIR/.cc-token-stats.sum.$$"
+TMP_PLUGIN="$PLUGIN_DIR/.cc-token.download.$$"
+TMP_SUM="$PLUGIN_DIR/.cc-token.sum.$$"
 trap 'rm -f "$TMP_PLUGIN" "$TMP_SUM"' EXIT
 curl -fsSL "${REPO}/${PLUGIN_NAME}?v=${VERSION}" -o "$TMP_PLUGIN"
 
@@ -106,7 +106,7 @@ mv "$TMP_PLUGIN" "$PLUGIN_DIR/$PLUGIN_NAME"
 echo "✓ Plugin installed"
 
 # ─── 6. Create config (skip in update mode or if exists) ───
-CONFIG_DIR="$HOME/.config/cc-token-stats"
+CONFIG_DIR="$HOME/.config/cc-token"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 if [ -f "$CONFIG_FILE" ]; then
     echo "✓ Config preserved: $CONFIG_FILE"
@@ -184,11 +184,11 @@ echo ""
 if $UPDATE_MODE; then
     echo "✓ Updated to v${VERSION}!"
 else
-    echo "✓ cc-token-status v${VERSION} installed!"
+    echo "✓ cc-token v${VERSION} installed!"
 fi
 echo ""
 echo "   Config: $CONFIG_FILE"
 echo "   Plugin: $PLUGIN_DIR/$PLUGIN_NAME"
-echo "   Repo:   https://github.com/jayson-jia-dev/cc-token-status"
+echo "   Repo:   https://github.com/jayson-jia-dev/cc-token"
 echo ""
 echo "To update later:  curl -fsSL ${REPO}/install.sh | bash -s -- --update"

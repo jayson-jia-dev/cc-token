@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT))
 
 # Load plugin module
 import importlib.util
-spec = importlib.util.spec_from_file_location("cc", str(ROOT / "cc-token-stats.5m.py"))
+spec = importlib.util.spec_from_file_location("cc", str(ROOT / "cc-token.5m.py"))
 cc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cc)
 

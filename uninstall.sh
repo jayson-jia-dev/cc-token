@@ -1,21 +1,21 @@
 #!/bin/bash
-# cc-token-status uninstaller
+# cc-token uninstaller
 set -euo pipefail
 
-echo "cc-token-status uninstaller"
+echo "cc-token uninstaller"
 echo ""
 
 # 1. Remove plugin
 PLUGIN_DIR=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || echo "$HOME/Library/Application Support/SwiftBar/plugins")
-rm -f "$PLUGIN_DIR/cc-token-stats.5m.py"
+rm -f "$PLUGIN_DIR/cc-token.5m.py"
 echo "✓ Plugin removed"
 
 # 2. Remove config and cache
-rm -rf ~/.config/cc-token-stats
+rm -rf ~/.config/cc-token
 echo "✓ Config removed"
 
 # 3. iCloud sync data
-ICLOUD_DIR="$HOME/Library/Mobile Documents/com~apple~CloudDocs/cc-token-stats"
+ICLOUD_DIR="$HOME/Library/Mobile Documents/com~apple~CloudDocs/cc-token"
 if [ -d "$ICLOUD_DIR" ]; then
     echo ""
     echo "iCloud sync data found at:"
@@ -76,4 +76,4 @@ if [ -d "/Applications/SwiftBar.app" ]; then
 fi
 
 echo ""
-echo "✓ cc-token-status fully uninstalled"
+echo "✓ cc-token fully uninstalled"
