@@ -10,7 +10,7 @@ cc-token — Claude Code usage dashboard in your menu bar.
 https://github.com/jayson-jia-dev/cc-token
 """
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 REPO_URL = "https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main"
 
 import json, os, glob, shlex, socket, subprocess, sys
@@ -363,14 +363,29 @@ def calc_user_level():
         except (OSError, json.JSONDecodeError, ValueError): pass
         if cnt > 0: _sessions.append(cnt)
     _sessions.sort()
-    # True median (mean of middle two for even counts), not upper-median
     _n = len(_sessions)
+    # v1.6.1: "usage depth" was scored on the MEDIAN session length, which is
+    # robust to outliers BY DESIGN — so a power user's deep marathon sessions
+    # (the very thing "depth" should reward) were ignored, and a pile of quick
+    # one-off lookups dragged the median to single digits → 0 pts no matter how
+    # many long conversations existed. Replaced with two orthogonal facets that
+    # actually capture depth and are immune to short-session dilution:
+    #   • p90 session length  — how deep your *deep* sessions go (8 pts)
+    #   • deep-session count  — how *many* substantial (≥50 msg) sessions (8 pts)
+    # Median is still computed for display context in the hover tooltip.
+    def _pctl(sorted_vals, q):
+        if not sorted_vals: return 0
+        idx = int(q * (len(sorted_vals) - 1))
+        return sorted_vals[idx]
     if _n == 0:
         med = 0
     elif _n % 2:
         med = _sessions[_n // 2]
     else:
         med = (_sessions[_n // 2 - 1] + _sessions[_n // 2]) / 2
+    _med_int = int(med) if med else 0
+    _p90 = int(_pctl(_sessions, 0.90))
+    _deep = sum(1 for c in _sessions if c >= 50)   # substantial sessions
     _ad = len(_dates)
     if _dates:
         _fd, _ld = min(_dates), max(_dates)
@@ -378,25 +393,38 @@ def calc_user_level():
     else:
         _td = 1
     _dens = _ad / max(_td, 1)
-    s1_a = 16 if med >= 80 else 10 if med >= 50 else 6 if med >= 30 else 2 if med >= 10 else 0
+    # Facet 1: depth of deep sessions (p90), 8 pts
+    s1_a = 8 if _p90 >= 100 else 6 if _p90 >= 60 else 4 if _p90 >= 30 else 2 if _p90 >= 15 else 0
+    # Facet 2: count of substantial (≥50 msg) sessions, 8 pts
+    s1_c = 8 if _deep >= 50 else 6 if _deep >= 20 else 4 if _deep >= 8 else 2 if _deep >= 3 else 0
+    # Facet 3: activity density, 4 pts
     s1_b = 4 if _dens >= 0.6 else 2 if _dens >= 0.4 else 0
-    s1 = min(s1_a + s1_b, 20)
+    s1 = min(s1_a + s1_c + s1_b, 20)
     details["usage"] = s1
-    _med_int = int(med) if med else 0
-    if s1_a >= 16:   _hint_med_zh, _hint_med_en = "已达满分", "maxed out"
-    elif _med_int >= 50: _hint_med_zh, _hint_med_en = "再深入到 80 条/次可拿满分（+6）", "reach 80+ msgs/session for full score (+6)"
-    elif _med_int >= 30: _hint_med_zh, _hint_med_en = "再深入到 50 条/次可 +4", "reach 50+ msgs/session for +4"
-    elif _med_int >= 10: _hint_med_zh, _hint_med_en = "再深入到 30 条/次可 +4", "reach 30+ msgs/session for +4"
-    else:                _hint_med_zh, _hint_med_en = "会话普遍较短，先冲到 10+ 条/次拿 2 分", "sessions too short; hit 10+ msgs/session for 2 pts"
+    if s1_a >= 8:    _hint_p90_zh, _hint_p90_en = "已达满分", "maxed out"
+    elif _p90 >= 60: _hint_p90_zh, _hint_p90_en = "深会话冲到 100+ 条可拿满分（+2）", "deep sessions to 100+ msgs for full score (+2)"
+    elif _p90 >= 30: _hint_p90_zh, _hint_p90_en = "深会话冲到 60+ 条可 +2", "deep sessions to 60+ msgs for +2"
+    elif _p90 >= 15: _hint_p90_zh, _hint_p90_en = "深会话冲到 30+ 条可 +2", "deep sessions to 30+ msgs for +2"
+    else:            _hint_p90_zh, _hint_p90_en = "会话普遍较短，深入到 15+ 条拿 2 分", "sessions short; reach 15+ msgs for 2 pts"
+    if s1_c >= 8:    _hint_deep_zh, _hint_deep_en = "已达满分", "maxed out"
+    elif _deep >= 20: _hint_deep_zh, _hint_deep_en = "累计 50+ 次深会话可拿满分（+2）", "50+ deep sessions for full score (+2)"
+    elif _deep >= 8: _hint_deep_zh, _hint_deep_en = "累计 20+ 次深会话可 +2", "20+ deep sessions for +2"
+    elif _deep >= 3: _hint_deep_zh, _hint_deep_en = "累计 8+ 次深会话可 +2", "8+ deep sessions for +2"
+    else:            _hint_deep_zh, _hint_deep_en = "多进行 ≥50 条的深度对话，3 次起拿 2 分", "have more ≥50-msg sessions; 3+ earns 2 pts"
     if s1_b >= 4:  _hint_den_zh, _hint_den_en = "已达满分", "maxed out"
     elif _dens >= 0.4: _hint_den_zh, _hint_den_en = "密度到 0.6 可 +2（更频繁使用）", "density ≥0.6 earns +2 (use more frequently)"
     else:              _hint_den_zh, _hint_den_en = "密度到 0.4 可 +2（每两三天用一次以上）", "density ≥0.4 earns +2 (use every 2-3 days)"
     breakdown["usage"] = [
-        {"label_zh": "会话深度（消息数中位）", "label_en": "Session depth (median msgs)",
-         "value_zh": f"{_med_int} 条/次" + (f"（{_n} 次会话）" if _n else "（暂无数据）"),
-         "value_en": f"{_med_int} msgs/session" + (f" ({_n} sessions)" if _n else " (no data)"),
-         "points": s1_a, "max": 16,
-         "hint_zh": _hint_med_zh, "hint_en": _hint_med_en},
+        {"label_zh": "深会话深度（前 10% 会话 p90）", "label_en": "Deep-session depth (p90 msgs)",
+         "value_zh": f"{_p90} 条/次" + (f"（中位 {_med_int}，共 {_n} 次）" if _n else "（暂无数据）"),
+         "value_en": f"{_p90} msgs/session" + (f" (median {_med_int}, {_n} total)" if _n else " (no data)"),
+         "points": s1_a, "max": 8,
+         "hint_zh": _hint_p90_zh, "hint_en": _hint_p90_en},
+        {"label_zh": "深会话数量（≥50 条消息）", "label_en": "Substantial sessions (≥50 msgs)",
+         "value_zh": f"{_deep} 次" if _n else "暂无数据",
+         "value_en": f"{_deep} sessions" if _n else "no data",
+         "points": s1_c, "max": 8,
+         "hint_zh": _hint_deep_zh, "hint_en": _hint_deep_en},
         {"label_zh": "活跃密度（活跃天/覆盖天）", "label_en": "Activity density (active/span)",
          "value_zh": f"{_ad} / {_td} 天 = {_dens:.0%}",
          "value_en": f"{_ad} of {_td} days = {_dens:.0%}",
@@ -1698,7 +1726,7 @@ def _build_level_data():
         dims_sorted = sorted(details.items(), key=lambda x: x[1])
         tips = []
         tip_map = {
-            "usage": {"en": "Use longer sessions (50+ messages per session)", "zh": "进行更深度的对话（单次会话 50+ 消息）"},
+            "usage": {"en": "Have more deep sessions (50+ messages each)", "zh": "多积累深度对话（单次 50+ 消息的会话越多越好）"},
             "context": {"en": "Create CLAUDE.md, add memory files, set up rules", "zh": "创建 CLAUDE.md，添加记忆文件，配置 rules"},
             "tools": {"en": "Set up MCP servers and install plugins", "zh": "配置 MCP 服务器，安装插件"},
             "automation": {"en": "Create custom commands, skills, or hooks", "zh": "创建自定义 commands、skills 或 hooks"},
