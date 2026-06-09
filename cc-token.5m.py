@@ -10,7 +10,7 @@ cc-token — Claude Code usage dashboard in your menu bar.
 https://github.com/jayson-jia-dev/cc-token
 """
 
-VERSION = "1.6.2"
+VERSION = "1.6.3"
 REPO_URL = "https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main"
 
 import json, os, glob, shlex, socket, subprocess, sys
@@ -2969,11 +2969,23 @@ def main():
         _sd = usage.get("seven_day")
         if _sd and _sd.get("utilization") is not None: _7d_util = _sd["utilization"]
 
-    _max_util = max(_5h_util, _7d_util)
-    if _max_util >= 100:
-        print(f"CC 100%")
+    # Menu-bar number is ALWAYS the 5h session window — a stable, predictable
+    # meaning. The weekly (7d) window only surfaces as an explicitly "周/wk"-
+    # labelled badge, so the bare number never silently switches between two
+    # windows (which would leave the user unsure what "52%" refers to).
+    # Threshold 80 matches the notification tiers. Fixes the prior gap where a
+    # near-limit weekly window rendered a bare "CC" with no warning whenever
+    # the 5h window happened to be idle.
+    _WK_WARN = 80
+    _wk = ((f" · 周{_7d_util:.0f}%" if LANG == "zh" else f" · {_7d_util:.0f}%wk")
+           if _7d_util >= _WK_WARN else "")
+    if _5h_util >= 100:
+        print(f"CC 100%{_wk}")
     elif _5h_util > 0:
-        print(f"CC {_5h_util:.0f}%")
+        print(f"CC {_5h_util:.0f}%{_wk}")
+    elif _7d_util >= _WK_WARN:
+        # 5h idle but weekly notable — label it as weekly, never go blank
+        print(f"CC 周{_7d_util:.0f}%" if LANG == "zh" else f"CC {_7d_util:.0f}%wk")
     else:
         print("CC")
     print("---")
