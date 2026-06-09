@@ -10,7 +10,7 @@ cc-token — Claude Code usage dashboard in your menu bar.
 https://github.com/jayson-jia-dev/cc-token
 """
 
-VERSION = "1.6.1"
+VERSION = "1.6.2"
 REPO_URL = "https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main"
 
 import json, os, glob, shlex, socket, subprocess, sys
@@ -38,9 +38,24 @@ def _migrate_legacy_dirs():
         try:
             if old.is_dir() and not new.exists():
                 new.parent.mkdir(parents=True, exist_ok=True)
-                os.rename(str(old), str(new))
-        except OSError:
-            pass
+                # shutil.move falls back to copy+delete across volumes, where
+                # os.rename would raise EXDEV (e.g. iCloud dir on a different
+                # mount). os.rename alone could silently leave old config
+                # orphaned and the user staring at a blank "fresh" config.
+                import shutil
+                shutil.move(str(old), str(new))
+        except OSError as e:
+            # Data is NOT lost (old dir stays put on failure) but leave a
+            # breadcrumb — otherwise a failed migration looks exactly like
+            # "the upgrade wiped my config". DIAG_LOG_FILE isn't defined yet
+            # at module-load time, so write the literal path directly.
+            try:
+                diag = Path.home() / ".config" / "cc-token" / ".diag.log"
+                diag.parent.mkdir(parents=True, exist_ok=True)
+                with open(diag, "a") as _df:
+                    _df.write(f"migrate_legacy_dirs FAILED {old} -> {new}: {type(e).__name__}: {e}\n")
+            except OSError:
+                pass
 _migrate_legacy_dirs()
 
 DEFAULTS = {
@@ -324,7 +339,10 @@ def calc_user_level():
                 if os.path.isdir(_p):
                     _candidate_project_dirs.add(os.path.realpath(_p))
 
-    # 1. Usage maturity (20pts): median session length + density
+    # 1. Usage depth (20pts): p90 deep-session depth (8) + count of
+    #    substantial ≥50-msg sessions (8) + activity density (4). Median is
+    #    kept for display context only (v1.6.1 dropped it from scoring — see
+    #    the longer note at the scoring block below).
     # msg.id dedup mirrors scan() — session-resume rewrites the same
     # assistant messages back into the JSONL, which used to inflate
     # the per-session counter 40-80% on long sessions, pushing users
@@ -337,7 +355,10 @@ def calc_user_level():
     # ~50% of assistant usage rows and many entire days live only under
     # subagents/ on heavy users. Excluding them understated median session
     # length and active-day density, pushing users down the level ladder.
-    for jf in _g.glob(os.path.join(_cd, "projects/*/**/*.jsonl"), recursive=True):
+    # sorted() so msg.id dedup attribution (first-wins, global _seen_msgs)
+    # is deterministic across runs — raw glob order is filesystem-arbitrary,
+    # which let resumed-session replays shift p90/deep-count between ticks.
+    for jf in sorted(_g.glob(os.path.join(_cd, "projects/*/**/*.jsonl"), recursive=True)):
         cnt = 0
         try:
             with open(jf) as f:
@@ -1234,6 +1255,7 @@ def _write_synced_usage(data):
         os.makedirs(os.path.dirname(shared), exist_ok=True)
         tmp = shared + ".tmp"
         Path(tmp).write_text(json.dumps(data))
+        os.chmod(tmp, 0o600)  # parity with local USAGE_CACHE — it holds usage data
         os.replace(tmp, shared)
     except (OSError, TypeError):
         pass
@@ -1374,8 +1396,10 @@ def _save_scan_cache(base, today_str, s):
             "file_mtimes": _file_fingerprints(base),
             "result": {k: (dict(v) if isinstance(v, defaultdict) else v) for k, v in s.items()},
         }
-        SCAN_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SCAN_CACHE_FILE.write_text(json.dumps(cache))
+        # Atomic write (tmp + os.replace): a concurrent reader (--dashboard
+        # force-update overlapping the 5-min tick) never sees a truncated
+        # half-written cache — same reason USAGE_CACHE uses it.
+        _atomic_write_json(SCAN_CACHE_FILE, cache)
     except (OSError, TypeError) as e:
         _log_diag("_save_scan_cache", e)
 
@@ -1434,7 +1458,9 @@ def scan():
     if not os.path.isdir(base):
         return s
 
-    for pd in glob.glob(os.path.join(base, "*")):
+    # sorted() so the global first-wins msg.id dedup attributes a replayed
+    # id to the same file every run (raw glob order is filesystem-arbitrary).
+    for pd in sorted(glob.glob(os.path.join(base, "*"))):
         if not os.path.isdir(pd): continue
         proj = os.path.basename(pd)
         # Extract readable project name
@@ -1449,11 +1475,11 @@ def scan():
         # project-root JSONL, only a subagents/ file).
         # msg.id dedup (seen_ids below) is global, so the ~4,917 ids that
         # appear in BOTH root and subagents/ count exactly once.
-        for jf in glob.glob(os.path.join(pd, "**", "*.jsonl"), recursive=True):
+        for jf in sorted(glob.glob(os.path.join(pd, "**", "*.jsonl"), recursive=True)):
             has = False
             sess_cost = 0.0; sess_msgs = 0; sess_first_date = None; sess_model_counts = {}
             try:
-                with open(jf, "r", encoding="utf-8") as f:
+                with open(jf, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
                         try:
                             d = json.loads(line)
@@ -1583,7 +1609,11 @@ def scan():
                             short_dm = model_short(dom_model)
                             sess_list.append({"project": proj_name, "cost": round(sess_cost, 2),
                                               "msgs": sess_msgs, "model": short_dm})
-            except OSError as e:
+            except (OSError, UnicodeError) as e:
+                # UnicodeError belt-and-suspenders: open() already uses
+                # errors="replace" so decode never raises during iteration,
+                # but a bad path/encoding edge still skips just this file
+                # instead of aborting the whole scan → blank dashboard.
                 _log_diag(f"scan:open:{os.path.basename(jf)}", e)
 
     _save_scan_cache(base, today_str, s)
@@ -1622,6 +1652,10 @@ def save_sync(st):
         # today-panel can aggregate across machines (not just cost/msgs).
         td = st.get("today", {})
         today = {
+            # Stamp the local calendar day so a remote that hasn't run today
+            # can't fold its stale "today" snapshot into the fleet Today total
+            # (see _merge_machines_data — it now skips dated-but-stale remotes).
+            "date":   datetime.now().strftime("%Y-%m-%d"),
             "cost":   round(td.get("cost", 0), 2),
             "msgs":   td.get("msgs", 0),
             "tokens": td.get("tokens", 0),
@@ -1632,19 +1666,22 @@ def save_sync(st):
             "models": {m: {"msgs": v["msgs"], "cost": round(v["cost"], 2)}
                        for m, v in td.get("models", {}).items()},
         }
-        with open(os.path.join(d, "token-stats.json"), "w") as f:
-            json.dump({"machine": MACHINE, "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "session_count": st["sessions"], "input_tokens": st["inp"], "output_tokens": st["out"],
-                "cache_write_tokens": st["cw"], "cache_read_tokens": st["cr"],
-                "total_cost": round(st["cost"], 2), "date_range": {"min": st["d_min"], "max": st["d_max"]},
-                "model_breakdown": mb, "daily": daily, "hourly": hourly,
-                "projects": projects, "today": today,
-                # v3 fields — previously omitted, making remote heatmaps
-                # and per-day-per-model charts look local-only
-                "daily_models": daily_models,
-                "daily_hourly": daily_hourly,
-                "sessions_by_day": sessions_by_day,
-            }, f, indent=2)
+        # Atomic write — token-stats.json is the largest, most-frequently
+        # read sync artifact; a concurrent reader on another Mac must never
+        # json.loads a half-written file (same rationale as shared_usage.json).
+        _atomic_write_json(os.path.join(d, "token-stats.json"), {
+            "machine": MACHINE, "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "session_count": st["sessions"], "input_tokens": st["inp"], "output_tokens": st["out"],
+            "cache_write_tokens": st["cw"], "cache_read_tokens": st["cr"],
+            "total_cost": round(st["cost"], 2), "date_range": {"min": st["d_min"], "max": st["d_max"]},
+            "model_breakdown": mb, "daily": daily, "hourly": hourly,
+            "projects": projects, "today": today,
+            # v3 fields — previously omitted, making remote heatmaps
+            # and per-day-per-model charts look local-only
+            "daily_models": daily_models,
+            "daily_hourly": daily_hourly,
+            "sessions_by_day": sessions_by_day,
+        })
     except (OSError, TypeError, KeyError) as e:
         _log_diag("save_sync", e)
 
@@ -1770,17 +1807,27 @@ def _merge_machines_data(machines):
     today = {"cost": 0.0, "msgs": 0, "tokens": 0,
              "inp": 0, "out": 0, "cw": 0, "cr": 0, "models": {}}
     daily, hourly, models, projects = {}, {}, {}, {}
+    _local_today = datetime.now().strftime("%Y-%m-%d")
 
     for m in machines:
-        # today
+        # today — only fold a remote's "today" snapshot into the fleet Today
+        # total if it's actually from today. A remote that last ran yesterday
+        # still carries yesterday's "today" block; summing it inflated Today.
+        # Backward-compatible: pre-1.6.1 snapshots have no "date" field, so
+        # they still count (mt.get("date") is None) — we only EXCLUDE a
+        # snapshot that explicitly stamps a stale date.
         mt = m.get("today", {}) or {}
-        for k in ("cost", "msgs", "tokens", "inp", "out", "cw", "cr"):
-            today[k] = today.get(k, 0) + mt.get(k, 0)
-        for name, d in (mt.get("models") or {}).items():
-            if name not in today["models"]:
-                today["models"][name] = {"msgs": 0, "cost": 0.0}
-            today["models"][name]["msgs"] += d.get("msgs", 0)
-            today["models"][name]["cost"] += d.get("cost", 0)
+        _mt_date = mt.get("date")
+        # Only the TODAY block is date-gated; the machine's daily/hourly/
+        # models/projects history below still merges regardless of staleness.
+        if not (_mt_date and _mt_date != _local_today):
+            for k in ("cost", "msgs", "tokens", "inp", "out", "cw", "cr"):
+                today[k] = today.get(k, 0) + mt.get(k, 0)
+            for name, d in (mt.get("models") or {}).items():
+                if name not in today["models"]:
+                    today["models"][name] = {"msgs": 0, "cost": 0.0}
+                today["models"][name]["msgs"] += d.get("msgs", 0)
+                today["models"][name]["cost"] += d.get("cost", 0)
 
         # daily (including per-day sessions so menu/dashboard can show
         # fleet session counts when S-2 remotes are synced; older remotes
@@ -2457,7 +2504,7 @@ var html='<div style="font-size:14px;color:#e6edf3;font-weight:700;margin-bottom
 var items=[
 {icon:'\u23f0',text:zh?'\u4f60\u6700\u6d3b\u8dc3\u7684\u65f6\u6bb5\u662f <b>'+peakH+':00</b>':'Your peak hour is <b>'+peakH+':00</b>'},
 {icon:'\ud83d\udcb8',text:zh?'\u6700\u70e7\u94b1\u7684\u4e00\u5929\u662f <b>'+maxDay+'</b>\uff08'+fc(maxCost)+'\uff09':'Most expensive day: <b>'+maxDay+'</b> ('+fc(maxCost)+')'},
-{icon:'\ud83c\udfc6',text:zh?'\u6700\u8017 Token \u7684\u9879\u76ee\u662f <b>'+topProj+'</b>':'Top project: <b>'+topProj+'</b> ('+fc(topProjCost)+')'},
+{icon:'\ud83c\udfc6',text:zh?'\u6700\u8017 Token \u7684\u9879\u76ee\u662f <b>'+esc(topProj)+'</b>':'Top project: <b>'+esc(topProj)+'</b> ('+fc(topProjCost)+')'},
 {icon:'\ud83d\udd25',text:zh?'\u8fde\u7eed\u4f7f\u7528 <b>'+streak+' \u5929</b>':'Current streak: <b>'+streak+' days</b>'},
 {icon:'\ud83d\udcbb',text:zh?'Claude \u5e2e\u4f60\u751f\u6210\u4e86\u7ea6 <b>'+codeLinesStr+' \u884c\u4ee3\u7801</b>':'Claude generated ~<b>'+codeLinesStr+' lines</b> of code'},
 {icon:'\ud83d\udcac',text:zh?'\u603b\u5171\u5bf9\u8bdd <b>'+totalMsgs.toLocaleString()+' \u6761\u6d88\u606f</b>':'Total <b>'+totalMsgs.toLocaleString()+' messages</b>'},
@@ -2777,10 +2824,21 @@ def cleanup_duplicate_plugins():
         if os.path.basename(plugin_dir) != "plugins":
             return  # Only clean when we're actually running from SwiftBar's dir
         prefix = "cc-token.5m.py"
+        # Reap (a) stray copies of THIS plugin — cc-token.5m.py.bak.* — and
+        # (b) the pre-1.6.0 legacy filenames cc-token-stats/-status.5m.py
+        # (+ their .bak.* derivatives) the rename left behind. SwiftBar loads
+        # ANY filename containing the .5m. refresh pattern as a live plugin,
+        # so an un-reaped legacy file = a second menu-bar icon polling the
+        # Anthropic API on its own timer forever. Doing it here (every tick)
+        # means even a reinstall that drops the new file beside the old one
+        # self-heals on the next refresh.
+        legacy = ("cc-token-stats.5m.py", "cc-token-status.5m.py")
         for name in os.listdir(plugin_dir):
             if name == prefix:
                 continue
-            if not name.startswith(prefix + "."):
+            is_self_family = name.startswith(prefix + ".")
+            is_legacy = any(name == lg or name.startswith(lg + ".") for lg in legacy)
+            if not (is_self_family or is_legacy):
                 continue
             path = os.path.join(plugin_dir, name)
             if os.path.realpath(path) == self_path:
