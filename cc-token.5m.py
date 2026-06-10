@@ -10,7 +10,7 @@ cc-token — Claude Code usage dashboard in your menu bar.
 https://github.com/jayson-jia-dev/cc-token
 """
 
-VERSION = "1.6.6"
+VERSION = "1.6.7"
 REPO_URL = "https://raw.githubusercontent.com/jayson-jia-dev/cc-token/main"
 
 import json, os, glob, shlex, socket, subprocess, sys
@@ -204,6 +204,8 @@ SYNC_DIR, SYNC_TYPE = resolve_sync()
 
 # Per-model pricing (USD per 1M tokens) — https://docs.anthropic.com/en/docs/about-claude/models
 # Using 1h cache write prices (Claude Code uses 1h cache ~90% of the time)
+# Fable 5 / Mythos 5: $10/$50 (flagship, ~2x Opus — added 2026-06-09 launch)
+# Opus 4.5/4.6/4.7/4.8: $5/$25
 # Opus 4.0/4.1: $15/$75 (legacy)
 # Sonnet 4.5/4.6: $3/$15
 # Haiku 4.5: $1/$5
@@ -221,6 +223,7 @@ SYNC_DIR, SYNC_TYPE = resolve_sync()
 # the sum of both and is priced at 1h as a conservative fallback when
 # the split isn't available (older JSONLs without the nested object).
 PRICING = {
+    "fable":     {"input": 10, "output": 50, "cache_write_5m": 12.5,  "cache_write_1h": 20,    "cache_read": 1.00},
     "opus_new":  {"input": 5,  "output": 25, "cache_write_5m": 6.25,  "cache_write_1h": 10,    "cache_read": 0.50},
     "opus_old":  {"input": 15, "output": 75, "cache_write_5m": 18.75, "cache_write_1h": 30,    "cache_read": 1.50},
     "sonnet":    {"input": 3,  "output": 15, "cache_write_5m": 3.75,  "cache_write_1h": 6,     "cache_read": 0.30},
@@ -235,6 +238,11 @@ MODEL_SHORT = {
 }
 
 _FAMILIES = {"opus": "Opus", "sonnet": "Sonnet", "haiku": "Haiku"}
+# Fable/Mythos (2026-06-09 launch) use single-number versioning — 'claude-fable-5'
+# — unlike the Opus/Sonnet/Haiku major-minor scheme ('claude-opus-4-8'). Kept in a
+# separate map so 'claude-fable-5' → 'Fable 5' and a date-suffixed
+# 'claude-fable-5-20260609' doesn't misparse the date as a minor version.
+_FAMILIES_SINGLE = {"fable": "Fable", "mythos": "Mythos"}
 
 def model_short(m):
     """Friendly display name for a model id, e.g. 'claude-opus-4-8' -> 'Opus 4.8'.
@@ -251,6 +259,8 @@ def model_short(m):
         if p in _FAMILIES and i + 2 < len(parts) \
                 and parts[i + 1].isdigit() and parts[i + 2].isdigit():
             return f"{_FAMILIES[p]} {parts[i + 1]}.{parts[i + 2]}"
+        if p in _FAMILIES_SINGLE and i + 1 < len(parts) and parts[i + 1].isdigit():
+            return f"{_FAMILIES_SINGLE[p]} {parts[i + 1]}"
     return base.split("-")[-1] if "-" in base else base[:15]
 
 def dw(s):
@@ -274,6 +284,8 @@ def fc(n):
 
 def tier(m):
     ml = m.lower()
+    if "fable" in ml or "mythos" in ml:
+        return "fable"
     if "opus" in ml:
         # Only legacy Opus (4.0/4.1) uses old pricing; all newer default to opus_new
         if "4-0" in m or "4-1" in m or "4.0" in ml or "4.1" in ml:
@@ -2214,6 +2226,7 @@ $('h2').textContent=t('model');
 // Newest version per family stays brightest; older versions step into darker
 // shades. Unknown variants fall back to the family's base color.
 const MODEL_COLORS={
+'Fable 5':'#e3b341','Mythos 5':'#db61a2',
 'Opus 4.8':'#d8c7fd','Opus 4.7':'#b98ff5','Opus 4.6':'#9163e8','Opus 4.5':'#7548c4',
 'Sonnet 4.6':'#7cc1ff','Sonnet 4.5':'#58a6ff',
 'Haiku 4.5':'#56d364','Haiku 3.5':'#3fb950'
@@ -2221,7 +2234,9 @@ const MODEL_COLORS={
 const mClr={};Object.keys(D.models).forEach(k=>{
 if(MODEL_COLORS[k]){mClr[k]=MODEL_COLORS[k];return;}
 const l=k.toLowerCase();
-mClr[k]=l.includes('opus')?C.op:l.includes('haiku')?C.hk:C.sn;
+// Fable/Mythos are the flagship tier — keep them gold/pink, not Sonnet blue,
+// even for future un-mapped variants (e.g. Fable 6).
+mClr[k]=l.includes('fable')?'#e3b341':l.includes('mythos')?'#db61a2':l.includes('opus')?C.op:l.includes('haiku')?C.hk:C.sn;
 });
 const mTotal=Object.values(D.models).reduce((a,b)=>a+b,0)||1;
 const mMax=Math.max(...Object.values(D.models));
@@ -2583,9 +2598,9 @@ var hourly=D.hourly||{};var models=D.models||{};var projects=D.projects||{};
 var cost=D.total.cost;var sessions=D.total.sessions;
 // Late night usage (0-4)
 var lateCount=0;for(var h=0;h<=4;h++)lateCount+=(hourly[String(h)]||0);
-// Opus percentage
+// Flagship-tier cost share (Opus + Fable + Mythos — the top models)
 var modelTotal=Object.values(models).reduce(function(a,b){return a+b;},0)||1;
-var opusPct=0;for(var m in models){if(m.toLowerCase().indexOf('opus')>=0)opusPct+=models[m]/modelTotal*100;}
+var flagshipPct=0;for(var m in models){var lm=m.toLowerCase();if(lm.indexOf('opus')>=0||lm.indexOf('fable')>=0||lm.indexOf('mythos')>=0)flagshipPct+=models[m]/modelTotal*100;}
 // Max session msgs (from sessions_by_day)
 var maxSessMsgs=0;var sbd=D.sessions_by_day||{};
 for(var d in sbd){sbd[d].forEach(function(s){if(s.msgs>maxSessMsgs)maxSessMsgs=s.msgs;});}
@@ -2623,7 +2638,7 @@ var badges=[
 ['cost1m','\ud83c\udf0c','\u767e\u4e07\u5200\u65a9','$1M Club',cost>=1000000],
 ['night','\ud83c\udf19','\u591c\u732b\u5b50','Night Owl',lateCount>=50],
 ['night100','\ud83e\udddb','\u5f7b\u591c\u8005','Vampire Coder',lateCount>=200],
-['opus90','\ud83d\udc9c','Opus \u4fe1\u5f92','Opus Devotee',opusPct>=90],
+['opus90','\ud83d\udc9c','\u65d7\u8230\u4fe1\u5f92','Flagship Devotee',flagshipPct>=90],
 ['marathon','\ud83c\udfaf','\u4e00\u955c\u5230\u5e95','Marathon Session',maxSessMsgs>=200],
 ['streak7','\ud83d\udd25','\u4e03\u65e5\u8fde\u51fb','7-Day Streak',streak>=7],
 ['streak30','\u26a1','\u6708\u5ea6\u8fbe\u4eba','30-Day Streak',streak>=30],
@@ -2651,7 +2666,7 @@ cost100k:['\u7d2f\u8ba1\u82b1\u8d39\u8fbe\u5230 $100,000','Cumulative cost reach
 cost1m:['\u7d2f\u8ba1\u82b1\u8d39\u8fbe\u5230 $1,000,000','Cumulative cost reaches $1,000,000'],
 night:['\u51cc\u6668 0-4 \u70b9\u53d1\u9001\u6d88\u606f \u2265 50 \u6761','50+ messages between midnight and 4am'],
 night100:['\u51cc\u6668 0-4 \u70b9\u53d1\u9001\u6d88\u606f \u2265 200 \u6761','200+ messages between midnight and 4am'],
-opus90:['Opus \u6a21\u578b\u82b1\u8d39\u5360\u603b\u6210\u672c \u2265 90%','Opus spend \u2265 90% of total cost'],
+opus90:['\u9876\u7ea7\u6a21\u578b (Opus/Fable/Mythos) \u82b1\u8d39\u5360\u603b\u6210\u672c \u2265 90%','Flagship (Opus/Fable/Mythos) spend \u2265 90% of total cost'],
 marathon:['\u5355\u6b21\u4f1a\u8bdd\u6d88\u606f\u6570 \u2265 200 \u6761','200+ messages in a single session'],
 streak7:['\u8fde\u7eed 7 \u5929\u4f7f\u7528 Claude Code','7-day consecutive usage streak'],
 streak30:['\u8fde\u7eed 30 \u5929\u4f7f\u7528 Claude Code','30-day consecutive usage streak'],

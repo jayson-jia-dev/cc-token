@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Regression tests for tier() classification and end-to-end cost math.
 
-tier() routes a model name to one of four PRICING keys (opus_new, opus_old,
-sonnet, haiku). Any drift here silently re-prices the entire fleet — a 5x
-difference between opus_new ($5 input) and opus_old ($15 input), and 3x
-between sonnet and opus_new. Uncaught classification bugs were the root
-cause of v1.4.2's precision pass.
+tier() routes a model name to one of five PRICING keys (fable, opus_new,
+opus_old, sonnet, haiku). Any drift here silently re-prices the entire fleet —
+a 5x difference between opus_new ($5 input) and opus_old ($15 input), 3x
+between sonnet and opus_new, and 2x between fable ($10) and opus_new. Uncaught
+classification bugs were the root cause of v1.4.2's precision pass and the
+v1.6.7 Fable 5 launch adaptation (Fable fell through to sonnet → 3.3x undercount).
 
 Run with:  python3 tests/test_tier_pricing.py
 """
@@ -43,6 +44,19 @@ class TierClassificationTest(unittest.TestCase):
         ):
             self.assertEqual(self.mod.tier(m), "opus_new", f"{m} → opus_new")
 
+    def test_fable_and_mythos_map_to_flagship_tier(self):
+        # Fable 5 / Mythos 5 (2026-06-09 launch) are the new flagship pricing
+        # tier ($10/$50). Before v1.6.7 they fell through to sonnet ($3/$15),
+        # undercounting cost ~3.3x — the entire point of this regression guard.
+        for m in (
+            "claude-fable-5",
+            "claude-mythos-5",
+            "claude-fable-5-20260609",
+            "CLAUDE-FABLE-5",
+            "claude-fable-6-future",
+        ):
+            self.assertEqual(self.mod.tier(m), "fable", f"{m} → fable")
+
     def test_opus_old_covers_legacy_4_0_and_4_1(self):
         # Original Opus 4 / 4.1 billed at the older, higher rate.
         for m in (
@@ -71,11 +85,18 @@ class TierClassificationTest(unittest.TestCase):
     def test_pricing_table_has_all_tiers(self):
         # Every key tier() can return must be in PRICING or scan() falls
         # through to sonnet pricing — masking the bug.
-        for t in ("opus_new", "opus_old", "sonnet", "haiku"):
+        for t in ("fable", "opus_new", "opus_old", "sonnet", "haiku"):
             self.assertIn(t, self.mod.PRICING)
             p = self.mod.PRICING[t]
             for k in ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read"):
                 self.assertIn(k, p, f"{t} missing {k}")
+
+    def test_fable_pricing_matches_published_rates(self):
+        # https://platform.claude.com/docs/en/about-claude/pricing (2026-06-09)
+        p = self.mod.PRICING["fable"]
+        self.assertEqual((p["input"], p["output"], p["cache_write_5m"],
+                          p["cache_write_1h"], p["cache_read"]),
+                         (10, 50, 12.5, 20, 1.00))
 
 
 class TierCostEndToEndTest(unittest.TestCase):
@@ -140,6 +161,39 @@ class TierCostEndToEndTest(unittest.TestCase):
         s = self.mod.scan()
         # 1M @ $3.75 + 1M @ $6 = $9.75
         self.assertAlmostEqual(s["cost"], 9.75, places=4)
+
+    def test_fable_is_2x_opus_and_priced_absolutely(self):
+        # Fable input $10/output $50 vs Opus 4.8 $5/$25 → exactly 2x. Guards
+        # against a regression that re-prices Fable as sonnet (0.6x) or opus (0.5x).
+        with open(self.jsonl, "w") as f:
+            f.write(self._row("a", "claude-fable-5", 1_000_000, 1_000_000) + "\n")
+            f.write(self._row("b", "claude-opus-4-8", 1_000_000, 1_000_000) + "\n")
+        s = self.mod.scan()
+        costs = {m: v["cost"] for m, v in s["models"].items()}
+        self.assertAlmostEqual(costs["claude-fable-5"] / costs["claude-opus-4-8"],
+                               2.0, places=4)
+        # Absolute: 1M input @ $10 + 1M output @ $50 = $60
+        self.assertAlmostEqual(costs["claude-fable-5"], 60.0, places=4)
+
+
+class ModelShortNameTest(unittest.TestCase):
+    """model_short() display-name derivation, incl. the Fable/Mythos scheme."""
+
+    def setUp(self):
+        self.mod = load_plugin()
+
+    def test_opus_major_minor(self):
+        self.assertEqual(self.mod.model_short("claude-opus-4-8"), "Opus 4.8")
+        self.assertEqual(self.mod.model_short("claude-opus-4-8[1m]"), "Opus 4.8")
+        self.assertEqual(self.mod.model_short("claude-opus-4-5-20250918"), "Opus 4.5")
+
+    def test_fable_mythos_single_number(self):
+        # Single-number versioning. A trailing date stamp must NOT be misread
+        # as a minor version (the bug would yield 'Fable 5.20260609').
+        self.assertEqual(self.mod.model_short("claude-fable-5"), "Fable 5")
+        self.assertEqual(self.mod.model_short("claude-mythos-5"), "Mythos 5")
+        self.assertEqual(self.mod.model_short("claude-fable-5-20260609"), "Fable 5")
+        self.assertEqual(self.mod.model_short("claude-fable-6"), "Fable 6")
 
 
 if __name__ == "__main__":
